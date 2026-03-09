@@ -1,22 +1,25 @@
-#include <Arduino.h>
-#include <DHT.h>
-#include <Adafruit_NeoPixel.h>
+#define LED_PIN 48
+#define SDA_PIN GPIO_NUM_11
+#define SCL_PIN GPIO_NUM_12
+#define NUM_PIXELS 4
+#define MY_LED 4
+
+#include <WiFi.h>
+#include <Arduino_MQTT_Client.h>
+#include <ThingsBoard.h>
+#include "DHT20.h"
+#include "Wire.h"
+#include <ArduinoOTA.h>
 
 // ================== CẤU HÌNH PHẦN CỨNG ==================
 
 // LED đơn cho Task 1 – mình dùng chân R của module RGB
-#define LED_PIN   18
 
 // DHT22 (cảm biến T/H)
-#define DHTPIN    15
-#define DHTTYPE   DHT22
-DHT dht(DHTPIN, DHTTYPE);
+
 
 // NeoPixel (WS2812) cho Task 2
 // Chân S (DIN) của dải led nối vào NEO_PIN
-#define NEO_PIN    21        // ĐỔI lại nếu bạn cắm vào pin khác
-#define NEO_COUNT  10        // dải của bạn có 10 led
-Adafruit_NeoPixel strip(NEO_COUNT, NEO_PIN, NEO_GRB + NEO_KHZ800);
 
 // ================== RTOS HANDLE & BIẾN DÙNG CHUNG ==================
 
