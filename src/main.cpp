@@ -1,11 +1,18 @@
 #include <Arduino.h>
+#include <math.h>
 #include <Adafruit_NeoPixel.h>
+#include <Arduino_MQTT_Client.h>
 #include <LiquidCrystal_I2C.h>
+#include <ThingsBoard.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
 
+#include "cloud_credentials.h"
 #include "DHT20.h"
+#include "tinyml_model.h"
+
+using CoreIotClient = ThingsBoardSized<8>;
 
 enum class DisplayState : uint8_t {
   Normal,
@@ -18,9 +25,15 @@ enum class DeviceTarget : uint8_t {
   RgbBeacon,
 };
 
+struct SensorSample {
+  float temperatureC;
+  float humidityPercent;
+};
+
 struct SensorReading {
   float temperatureC;
   float humidityPercent;
+  float confidence;
   DisplayState state;
 };
 
@@ -36,6 +49,19 @@ struct DeviceCommand {
   bool enabled;
 };
 
+struct TinyMlEvaluationSummary {
+  float accuracyPercent;
+  float averageLatencyUs;
+  uint16_t sampleCount;
+};
+
+struct CloudTelemetrySummary {
+  bool staConfigured;
+  bool staConnected;
+  bool coreIotConnected;
+  uint32_t publishCount;
+};
+
 struct DashboardSnapshot {
   SensorReading latestReading;
   bool hasReading;
@@ -44,13 +70,25 @@ struct DashboardSnapshot {
   bool rgbBeaconOn;
   bool apSecured;
   bool apPasswordFallback;
+  bool staConfigured;
+  bool staConnected;
+  bool coreIotConnected;
+  bool tinyMlReady;
   uint8_t historyCount;
   uint8_t historyWriteIndex;
+  uint16_t tinyMlEvaluationSamples;
+  uint32_t coreIotPublishCount;
   char accessPointSsid[33];
   char accessPointPassword[65];
   char accessPointIp[16];
+  char stationSsid[33];
+  char stationIp[16];
+  char coreIotServer[32];
+  char tinyMlModelName[32];
   float temperatureHistory[24];
   float humidityHistory[24];
+  float tinyMlAccuracyPercent;
+  float tinyMlAverageLatencyUs;
 };
 
 struct AppContext {
@@ -59,8 +97,12 @@ struct AppContext {
   LiquidCrystal_I2C *lcd;
   WebServer *server;
   Adafruit_NeoPixel *rgbPixel;
+  WiFiClient *cloudWifiClient;
+  Arduino_MQTT_Client *cloudMqttClient;
+  CoreIotClient *coreIotClient;
   SemaphoreHandle_t lcdMutex;
   SemaphoreHandle_t snapshotMutex;
+  QueueHandle_t sensorSampleQueue;
   QueueHandle_t deviceCommandQueue;
   StateChannel normalChannel;
   StateChannel warningChannel;
@@ -75,6 +117,11 @@ struct AppContext {
 struct DisplayTaskContext {
   AppContext *app;
   StateChannel *channel;
+};
+
+struct TinyMlPrediction {
+  DisplayState state;
+  float confidencePercent;
 };
 
 bool isI2cDevicePresent(TwoWire &wire, uint8_t address) {
@@ -120,6 +167,85 @@ DisplayState classifyReading(float temperatureC, float humidityPercent) {
   }
 
   return DisplayState::Normal;
+}
+
+DisplayState displayStateFromLabel(uint8_t label) {
+  switch (label) {
+    case 0:
+      return DisplayState::Normal;
+    case 1:
+      return DisplayState::Warning;
+    default:
+      return DisplayState::Critical;
+  }
+}
+
+uint8_t displayStateToLabel(DisplayState state) {
+  return static_cast<uint8_t>(state);
+}
+
+TinyMlPrediction runTinyMlInference(float temperatureC, float humidityPercent) {
+  float normalizedInput[tinyml_model::kInputSize] = {};
+  normalizedInput[0] = (temperatureC - tinyml_model::kInputMean[0]) / tinyml_model::kInputStd[0];
+  normalizedInput[1] = (humidityPercent - tinyml_model::kInputMean[1]) / tinyml_model::kInputStd[1];
+
+  float hidden1[tinyml_model::kHidden1Size] = {};
+  for (size_t j = 0; j < tinyml_model::kHidden1Size; ++j) {
+    float value = tinyml_model::kBias1[j];
+    for (size_t i = 0; i < tinyml_model::kInputSize; ++i) {
+      value += normalizedInput[i] * tinyml_model::kWeights1[i][j];
+    }
+    hidden1[j] = value > 0.0f ? value : 0.0f;
+  }
+
+  float hidden2[tinyml_model::kHidden2Size] = {};
+  for (size_t j = 0; j < tinyml_model::kHidden2Size; ++j) {
+    float value = tinyml_model::kBias2[j];
+    for (size_t i = 0; i < tinyml_model::kHidden1Size; ++i) {
+      value += hidden1[i] * tinyml_model::kWeights2[i][j];
+    }
+    hidden2[j] = value > 0.0f ? value : 0.0f;
+  }
+
+  float logits[tinyml_model::kOutputSize] = {};
+  float maxLogit = -INFINITY;
+  for (size_t j = 0; j < tinyml_model::kOutputSize; ++j) {
+    float value = tinyml_model::kBias3[j];
+    for (size_t i = 0; i < tinyml_model::kHidden2Size; ++i) {
+      value += hidden2[i] * tinyml_model::kWeights3[i][j];
+    }
+    logits[j] = value;
+    if (value > maxLogit) {
+      maxLogit = value;
+    }
+  }
+
+  float probabilitySum = 0.0f;
+  float bestProbability = 0.0f;
+  uint8_t bestLabel = 0;
+  float probabilities[tinyml_model::kOutputSize] = {};
+
+  for (size_t j = 0; j < tinyml_model::kOutputSize; ++j) {
+    probabilities[j] = expf(logits[j] - maxLogit);
+    probabilitySum += probabilities[j];
+  }
+
+  if (probabilitySum <= 0.0f) {
+    return {DisplayState::Normal, 0.0f};
+  }
+
+  for (size_t j = 0; j < tinyml_model::kOutputSize; ++j) {
+    const float probability = probabilities[j] / probabilitySum;
+    if (probability >= bestProbability) {
+      bestProbability = probability;
+      bestLabel = static_cast<uint8_t>(j);
+    }
+  }
+
+  return {
+    displayStateFromLabel(bestLabel),
+    bestProbability * 100.0f,
+  };
 }
 
 const char *displayStateKey(DisplayState state) {
@@ -198,6 +324,35 @@ void updateSensorSnapshot(AppContext *app, const SensorReading &reading) {
   xSemaphoreGive(app->snapshotMutex);
 }
 
+void updateTinyMlSnapshot(AppContext *app, const TinyMlEvaluationSummary &summary) {
+  if (xSemaphoreTake(app->snapshotMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+    return;
+  }
+
+  app->snapshot.tinyMlReady = true;
+  app->snapshot.tinyMlAccuracyPercent = summary.accuracyPercent;
+  app->snapshot.tinyMlAverageLatencyUs = summary.averageLatencyUs;
+  app->snapshot.tinyMlEvaluationSamples = summary.sampleCount;
+
+  xSemaphoreGive(app->snapshotMutex);
+}
+
+void updateCloudSnapshot(AppContext *app, const CloudTelemetrySummary &summary) {
+  const String stationIp = summary.staConnected ? WiFi.localIP().toString() : String("0.0.0.0");
+
+  if (xSemaphoreTake(app->snapshotMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+    return;
+  }
+
+  app->snapshot.staConfigured = summary.staConfigured;
+  app->snapshot.staConnected = summary.staConnected;
+  app->snapshot.coreIotConnected = summary.coreIotConnected;
+  app->snapshot.coreIotPublishCount = summary.publishCount;
+  snprintf(app->snapshot.stationIp, sizeof(app->snapshot.stationIp), "%s", stationIp.c_str());
+
+  xSemaphoreGive(app->snapshotMutex);
+}
+
 void updateDeviceSnapshot(AppContext *app, DeviceTarget target, bool enabled) {
   if (xSemaphoreTake(app->snapshotMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
     return;
@@ -237,6 +392,56 @@ DashboardSnapshot copySnapshot(AppContext *app) {
   return snapshot;
 }
 
+bool hasStationCredentials() {
+  return strlen(cloud_credentials::kStaSsid) > 0 && strlen(cloud_credentials::kStaPassword) > 0;
+}
+
+TinyMlEvaluationSummary evaluateTinyMlOnDevice() {
+  uint16_t correctPredictions = 0;
+  uint32_t totalLatencyUs = 0;
+  uint16_t confusion[3][3] = {};
+
+  for (uint16_t index = 0; index < tinyml_model::kEvaluationSampleCount; ++index) {
+    const tinyml_model::EvaluationSample &sample = tinyml_model::kEvaluationSamples[index];
+
+    const uint32_t startTime = micros();
+    const TinyMlPrediction prediction = runTinyMlInference(sample.temperatureC, sample.humidityPercent);
+    totalLatencyUs += micros() - startTime;
+
+    const uint8_t predictedLabel = displayStateToLabel(prediction.state);
+    confusion[sample.label][predictedLabel] += 1;
+    if (predictedLabel == sample.label) {
+      correctPredictions++;
+    }
+  }
+
+  Serial.printf(
+    "[TinyML] Accuracy: %.2f%% on %u samples\r\n",
+    (100.0f * correctPredictions) / tinyml_model::kEvaluationSampleCount,
+    tinyml_model::kEvaluationSampleCount
+  );
+  Serial.printf(
+    "[TinyML] Avg inference latency: %.2f us\r\n",
+    static_cast<float>(totalLatencyUs) / tinyml_model::kEvaluationSampleCount
+  );
+  Serial.printf("[TinyML] Confusion matrix:\r\n");
+  for (uint8_t row = 0; row < 3; ++row) {
+    Serial.printf(
+      "[TinyML]   %u | %u %u %u\r\n",
+      row,
+      confusion[row][0],
+      confusion[row][1],
+      confusion[row][2]
+    );
+  }
+
+  return {
+    (100.0f * correctPredictions) / tinyml_model::kEvaluationSampleCount,
+    static_cast<float>(totalLatencyUs) / tinyml_model::kEvaluationSampleCount,
+    tinyml_model::kEvaluationSampleCount,
+  };
+}
+
 void renderReading(AppContext *app, const SensorReading &reading, const StateChannel &channel) {
   if (app->lcd == nullptr) {
     return;
@@ -250,7 +455,7 @@ void renderReading(AppContext *app, const SensorReading &reading, const StateCha
   char line2[17];
 
   snprintf(line1, sizeof(line1), "%-8s%4.1fC", channel.title, reading.temperatureC);
-  snprintf(line2, sizeof(line2), "H:%4.1f%% %-6s", reading.humidityPercent, channel.note);
+  snprintf(line2, sizeof(line2), "H:%4.1f%% M:%3.0f%%", reading.humidityPercent, reading.confidence);
 
   printPaddedLine(*app->lcd, 0, line1);
   printPaddedLine(*app->lcd, 1, line2);
@@ -313,7 +518,7 @@ void appendHistoryJson(String &json, const float *values, uint8_t count, uint8_t
 
 String buildStatusJson(const DashboardSnapshot &snapshot) {
   String json;
-  json.reserve(896);
+  json.reserve(1408);
 
   json += "{";
   json += "\"hasReading\":";
@@ -331,6 +536,19 @@ String buildStatusJson(const DashboardSnapshot &snapshot) {
   json += ",\"stateSummary\":\"";
   json += displayStateSummary(snapshot.latestReading.state);
   json += "\"";
+  json += ",\"tinyMlConfidence\":";
+  json += String(snapshot.latestReading.confidence, 1);
+  json += ",\"tinyMlReady\":";
+  json += snapshot.tinyMlReady ? "true" : "false";
+  json += ",\"tinyMlAccuracyPercent\":";
+  json += String(snapshot.tinyMlAccuracyPercent, 2);
+  json += ",\"tinyMlAverageLatencyUs\":";
+  json += String(snapshot.tinyMlAverageLatencyUs, 2);
+  json += ",\"tinyMlSamples\":";
+  json += String(snapshot.tinyMlEvaluationSamples);
+  json += ",\"tinyMlModel\":\"";
+  json += snapshot.tinyMlModelName;
+  json += "\"";
   json += ",\"statusLedOn\":";
   json += snapshot.statusLedOn ? "true" : "false";
   json += ",\"rgbBeaconOn\":";
@@ -346,10 +564,27 @@ String buildStatusJson(const DashboardSnapshot &snapshot) {
   json += ",\"accessPointIp\":\"";
   json += snapshot.accessPointIp;
   json += "\"";
+  json += ",\"stationSsid\":\"";
+  json += snapshot.stationSsid;
+  json += "\"";
+  json += ",\"stationIp\":\"";
+  json += snapshot.stationIp;
+  json += "\"";
+  json += ",\"coreIotServer\":\"";
+  json += snapshot.coreIotServer;
+  json += "\"";
   json += ",\"apSecured\":";
   json += snapshot.apSecured ? "true" : "false";
   json += ",\"apPasswordFallback\":";
   json += snapshot.apPasswordFallback ? "true" : "false";
+  json += ",\"staConfigured\":";
+  json += snapshot.staConfigured ? "true" : "false";
+  json += ",\"staConnected\":";
+  json += snapshot.staConnected ? "true" : "false";
+  json += ",\"coreIotConnected\":";
+  json += snapshot.coreIotConnected ? "true" : "false";
+  json += ",\"coreIotPublishCount\":";
+  json += String(snapshot.coreIotPublishCount);
   json += ",\"temperatureHistory\":";
   appendHistoryJson(
     json,
@@ -810,20 +1045,20 @@ String buildDashboardPage() {
         <h1>CO3037</h1>
         <div class="network-band">
           <div class="network-item">
-            <span class="network-label">WiFi</span>
+            <span class="network-label">Access Point</span>
             <strong class="network-value" id="ssidValue">CO3037_IOT</strong>
           </div>
           <div class="network-item">
-            <span class="network-label">IP truy cập</span>
+            <span class="network-label">IP truy cập AP</span>
             <strong class="network-value" id="ipValue">192.168.4.1</strong>
           </div>
           <div class="network-item">
-            <span class="network-label">Mật khẩu</span>
-            <strong class="network-value" id="passwordValue">123456</strong>
+            <span class="network-label">Station WiFi</span>
+            <strong class="network-value" id="stationValue">Chưa cấu hình</strong>
           </div>
           <div class="network-item">
-            <span class="network-label">Bảo mật</span>
-            <strong class="network-value" id="securityValue">Đang khởi tạo</strong>
+            <span class="network-label">CoreIOT</span>
+            <strong class="network-value" id="cloudValue">Đang khởi tạo</strong>
           </div>
         </div>
       </header>
@@ -848,7 +1083,7 @@ String buildDashboardPage() {
               <div class="metric-value"><span id="humidityValue">--</span><span class="metric-unit">%</span></div>
             </article>
             <article class="metric-card state-card">
-              <span class="metric-label">Trạng thái</span>
+              <span class="metric-label">Trạng thái TinyML</span>
               <div class="state-pill" id="statePill">Đang chờ</div>
             </article>
           </div>
@@ -891,6 +1126,8 @@ String buildDashboardPage() {
 
       <footer class="footer-note">
         <span id="lcdStatus">LCD: Đang chờ</span>
+        <span id="mlStatus">TinyML: Đang đánh giá</span>
+        <span id="cloudStatus">CoreIOT: Đang chờ</span>
         <span id="refreshState">Cập nhật thời gian thực</span>
       </footer>
     </section>
@@ -1003,9 +1240,19 @@ String buildDashboardPage() {
 
         document.getElementById('ssidValue').textContent = data.ssid;
         document.getElementById('ipValue').textContent = data.accessPointIp;
-        document.getElementById('passwordValue').textContent = data.requestedPassword;
-        document.getElementById('securityValue').textContent = data.apSecured ? 'WPA2' : 'Mở';
+        document.getElementById('stationValue').textContent = data.staConfigured
+          ? (data.staConnected ? data.stationSsid + ' | ' + data.stationIp : data.stationSsid + ' | Đang kết nối')
+          : 'Chưa cấu hình';
+        document.getElementById('cloudValue').textContent = data.coreIotConnected
+          ? 'Đã kết nối'
+          : (data.staConfigured ? 'Đang chờ MQTT' : 'Thiếu WiFi STA');
         document.getElementById('lcdStatus').textContent = data.lcdAvailable ? 'LCD: Sẵn sàng' : 'LCD: Không kết nối';
+        document.getElementById('mlStatus').textContent = data.tinyMlReady
+          ? 'TinyML: ' + data.tinyMlAccuracyPercent.toFixed(2) + '% / ' + data.tinyMlSamples + ' mẫu | ' + data.tinyMlAverageLatencyUs.toFixed(1) + ' us | Tin cậy ' + data.tinyMlConfidence.toFixed(1) + '%'
+          : 'TinyML: Đang đánh giá';
+        document.getElementById('cloudStatus').textContent = data.coreIotConnected
+          ? 'CoreIOT: ' + data.coreIotServer + ' | ' + data.coreIotPublishCount + ' lần gửi'
+          : (data.staConfigured ? 'CoreIOT: Chưa kết nối server' : 'CoreIOT: Cần điền WiFi STA');
 
         const statePill = document.getElementById('statePill');
         statePill.textContent = data.stateTitle;
@@ -1025,7 +1272,7 @@ String buildDashboardPage() {
         renderChart(data.temperatureHistory, data.humidityHistory);
         document.getElementById('refreshState').textContent = data.apPasswordFallback
           ? 'Mật khẩu dưới 8 ký tự nên AP đang mở'
-          : 'Cập nhật mỗi 2 giây';
+          : (data.staConnected ? 'AP + STA đang hoạt động' : 'Cập nhật mỗi 2 giây');
       } catch (error) {
         document.getElementById('refreshState').textContent = 'Đang thử kết nối lại';
       }
@@ -1121,7 +1368,7 @@ bool initializeLcd(AppContext *app) {
   app->lcd->init();
   app->lcd->backlight();
 
-  printPaddedLine(*app->lcd, 0, "Task 4 Console");
+  printPaddedLine(*app->lcd, 0, "Task 6 CoreIOT");
   printPaddedLine(*app->lcd, 1, "Starting AP");
 
   Serial.printf("[LCD] Connected at 0x%02X\r\n", lcdAddress);
@@ -1131,6 +1378,7 @@ bool initializeLcd(AppContext *app) {
 bool initializeChannels(AppContext *app) {
   app->lcdMutex = xSemaphoreCreateMutex();
   app->snapshotMutex = xSemaphoreCreateMutex();
+  app->sensorSampleQueue = xQueueCreate(1, sizeof(SensorSample));
   app->deviceCommandQueue = xQueueCreate(6, sizeof(DeviceCommand));
   app->normalChannel = {xSemaphoreCreateBinary(), xQueueCreate(1, sizeof(SensorReading)), "NORMAL", "OK"};
   app->warningChannel = {xSemaphoreCreateBinary(), xQueueCreate(1, sizeof(SensorReading)), "WARNING", "CHECK"};
@@ -1138,6 +1386,7 @@ bool initializeChannels(AppContext *app) {
 
   return app->lcdMutex != nullptr &&
          app->snapshotMutex != nullptr &&
+         app->sensorSampleQueue != nullptr &&
          app->deviceCommandQueue != nullptr &&
          app->normalChannel.semaphore != nullptr &&
          app->warningChannel.semaphore != nullptr &&
@@ -1150,10 +1399,17 @@ bool initializeChannels(AppContext *app) {
 void initializeSnapshot(AppContext *app) {
   memset(&app->snapshot, 0, sizeof(app->snapshot));
   app->snapshot.latestReading.state = DisplayState::Normal;
+  app->snapshot.latestReading.confidence = 0.0f;
   app->snapshot.lcdAvailable = false;
+  app->snapshot.tinyMlReady = false;
+  app->snapshot.staConfigured = hasStationCredentials();
+  snprintf(app->snapshot.stationSsid, sizeof(app->snapshot.stationSsid), "%s", cloud_credentials::kStaSsid);
+  snprintf(app->snapshot.stationIp, sizeof(app->snapshot.stationIp), "%s", "0.0.0.0");
+  snprintf(app->snapshot.coreIotServer, sizeof(app->snapshot.coreIotServer), "%s", cloud_credentials::kCoreIotServer);
   snprintf(app->snapshot.accessPointSsid, sizeof(app->snapshot.accessPointSsid), "%s", "CO3037_IOT");
   snprintf(app->snapshot.accessPointPassword, sizeof(app->snapshot.accessPointPassword), "%s", "123456");
   snprintf(app->snapshot.accessPointIp, sizeof(app->snapshot.accessPointIp), "%s", "0.0.0.0");
+  snprintf(app->snapshot.tinyMlModelName, sizeof(app->snapshot.tinyMlModelName), "%s", tinyml_model::kModelName);
 }
 
 void initializeRgbBeacon(AppContext *app) {
@@ -1188,6 +1444,82 @@ void startAccessPoint(AppContext *app) {
   Serial.println(WiFi.softAPIP());
 }
 
+void initializeCoreIot(AppContext *app) {
+  app->cloudWifiClient = new WiFiClient();
+  app->cloudMqttClient = new Arduino_MQTT_Client(*app->cloudWifiClient);
+  app->coreIotClient = new CoreIotClient(*app->cloudMqttClient, 256U, 256U);
+}
+
+bool ensureStationConnected(uint32_t &lastAttemptMs) {
+  if (!hasStationCredentials()) {
+    return false;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
+  const uint32_t now = millis();
+  if (now - lastAttemptMs < cloud_credentials::kReconnectDelayMs) {
+    return false;
+  }
+
+  lastAttemptMs = now;
+  Serial.printf("[WiFi] Connecting STA to %s\r\n", cloud_credentials::kStaSsid);
+  WiFi.begin(cloud_credentials::kStaSsid, cloud_credentials::kStaPassword);
+  return false;
+}
+
+bool ensureCoreIotConnected(AppContext *app, bool &attributesSent) {
+  if (app->coreIotClient == nullptr) {
+    return false;
+  }
+
+  if (app->coreIotClient->connected()) {
+    return true;
+  }
+
+  attributesSent = false;
+  Serial.printf("[CoreIOT] Connecting to %s\r\n", cloud_credentials::kCoreIotServer);
+  if (!app->coreIotClient->connect(
+        cloud_credentials::kCoreIotServer,
+        cloud_credentials::kCoreIotToken,
+        cloud_credentials::kCoreIotPort
+      )) {
+    Serial.println("[CoreIOT] MQTT connect failed");
+    return false;
+  }
+
+  Serial.println("[CoreIOT] MQTT connected");
+  return true;
+}
+
+void publishCoreIotAttributes(AppContext *app) {
+  if (app->coreIotClient == nullptr) {
+    return;
+  }
+
+  app->coreIotClient->sendAttributeData("mac_address", WiFi.macAddress().c_str());
+  app->coreIotClient->sendAttributeData("ip_address", WiFi.localIP().toString().c_str());
+  app->coreIotClient->sendAttributeData("ssid", WiFi.SSID().c_str());
+  app->coreIotClient->sendAttributeData("bssid", WiFi.BSSIDstr().c_str());
+  app->coreIotClient->sendAttributeData("channel", WiFi.channel());
+  app->coreIotClient->sendAttributeData("tinyml_model", tinyml_model::kModelName);
+}
+
+void publishCoreIotTelemetry(AppContext *app, const DashboardSnapshot &snapshot) {
+  if (app->coreIotClient == nullptr || !snapshot.hasReading) {
+    return;
+  }
+
+  app->coreIotClient->sendTelemetryData("temperature", snapshot.latestReading.temperatureC);
+  app->coreIotClient->sendTelemetryData("humidity", snapshot.latestReading.humidityPercent);
+  app->coreIotClient->sendTelemetryData("tinyml_confidence", snapshot.latestReading.confidence);
+  app->coreIotClient->sendTelemetryData("tinyml_state", displayStateKey(snapshot.latestReading.state));
+  app->coreIotClient->sendTelemetryData("tinyml_accuracy", snapshot.tinyMlAccuracyPercent);
+  app->coreIotClient->sendTelemetryData("rssi", WiFi.RSSI());
+}
+
 void sensorTask(void *pvParameters) {
   auto *app = static_cast<AppContext *>(pvParameters);
   constexpr TickType_t samplePeriod = pdMS_TO_TICKS(2000);
@@ -1204,10 +1536,35 @@ void sensorTask(void *pvParameters) {
       continue;
     }
 
-    SensorReading reading = {
+    SensorSample sample = {
       temperatureC,
       humidityPercent,
-      classifyReading(temperatureC, humidityPercent),
+    };
+
+    if (xQueueOverwrite(app->sensorSampleQueue, &sample) != pdPASS) {
+      Serial.println("[Sensor] Failed to publish sample to TinyML queue");
+    }
+
+    Serial.printf("[Sensor] T=%.1f C, H=%.1f %%\r\n", temperatureC, humidityPercent);
+    vTaskDelay(samplePeriod);
+  }
+}
+
+void inferenceTask(void *pvParameters) {
+  auto *app = static_cast<AppContext *>(pvParameters);
+  SensorSample sample = {};
+
+  for (;;) {
+    if (xQueueReceive(app->sensorSampleQueue, &sample, portMAX_DELAY) != pdPASS) {
+      continue;
+    }
+
+    const TinyMlPrediction prediction = runTinyMlInference(sample.temperatureC, sample.humidityPercent);
+    SensorReading reading = {
+      sample.temperatureC,
+      sample.humidityPercent,
+      prediction.confidencePercent,
+      prediction.state,
     };
 
     updateSensorSnapshot(app, reading);
@@ -1218,8 +1575,13 @@ void sensorTask(void *pvParameters) {
       xSemaphoreGive(targetChannel->semaphore);
     }
 
-    Serial.printf("[Sensor] T=%.1f C, H=%.1f %%\r\n", temperatureC, humidityPercent);
-    vTaskDelay(samplePeriod);
+    Serial.printf(
+      "[TinyML] %s (%.1f%%) for T=%.1f C, H=%.1f %%\r\n",
+      displayStateTitle(reading.state),
+      reading.confidence,
+      reading.temperatureC,
+      reading.humidityPercent
+    );
   }
 }
 
@@ -1276,6 +1638,67 @@ void deviceTask(void *pvParameters) {
   }
 }
 
+void cloudTask(void *pvParameters) {
+  auto *app = static_cast<AppContext *>(pvParameters);
+  uint32_t lastPublishMs = 0;
+  uint32_t lastStationAttemptMs = 0;
+  uint32_t publishCount = 0;
+  bool attributesSent = false;
+  bool missingCredentialsLogged = false;
+  constexpr TickType_t serviceInterval = pdMS_TO_TICKS(200);
+
+  for (;;) {
+    const bool staConfigured = hasStationCredentials();
+    const bool staConnected = ensureStationConnected(lastStationAttemptMs);
+    bool coreIotConnected = false;
+
+    if (!staConfigured) {
+      if (!missingCredentialsLogged) {
+        Serial.println("[CoreIOT] Waiting for STA WiFi credentials in include/cloud_credentials.h");
+        missingCredentialsLogged = true;
+      }
+    } else if (staConnected) {
+      missingCredentialsLogged = false;
+      coreIotConnected = ensureCoreIotConnected(app, attributesSent);
+
+      if (coreIotConnected) {
+        if (!attributesSent) {
+          publishCoreIotAttributes(app);
+          attributesSent = true;
+        }
+
+        app->coreIotClient->loop();
+
+        const uint32_t now = millis();
+        if (now - lastPublishMs >= cloud_credentials::kTelemetryIntervalMs) {
+          const DashboardSnapshot snapshot = copySnapshot(app);
+          publishCoreIotTelemetry(app, snapshot);
+          lastPublishMs = now;
+          publishCount++;
+
+          if (snapshot.hasReading) {
+            Serial.printf(
+              "[CoreIOT] Published #%lu T=%.1f C, H=%.1f %%\r\n",
+              static_cast<unsigned long>(publishCount),
+              snapshot.latestReading.temperatureC,
+              snapshot.latestReading.humidityPercent
+            );
+          }
+        }
+      }
+    }
+
+    updateCloudSnapshot(app, {
+      staConfigured,
+      staConnected,
+      coreIotConnected,
+      publishCount,
+    });
+
+    vTaskDelay(serviceInterval);
+  }
+}
+
 void webServerTask(void *pvParameters) {
   auto *app = static_cast<AppContext *>(pvParameters);
   constexpr TickType_t serviceInterval = pdMS_TO_TICKS(20);
@@ -1297,6 +1720,9 @@ void setup() {
   app->lcd = nullptr;
   app->server = nullptr;
   app->rgbPixel = nullptr;
+  app->cloudWifiClient = nullptr;
+  app->cloudMqttClient = nullptr;
+  app->coreIotClient = nullptr;
   app->sdaPin = GPIO_NUM_11;
   app->sclPin = GPIO_NUM_12;
   app->statusLedPin = LED_BUILTIN;
@@ -1316,8 +1742,10 @@ void setup() {
 
   app->snapshot.lcdAvailable = initializeLcd(app);
   initializeRgbBeacon(app);
+  initializeCoreIot(app);
+  updateTinyMlSnapshot(app, evaluateTinyMlOnDevice());
 
-  WiFi.mode(WIFI_MODE_AP);
+  WiFi.mode(hasStationCredentials() ? WIFI_MODE_APSTA : WIFI_MODE_AP);
   WiFi.setSleep(false);
   startAccessPoint(app);
   showAccessPointInfo(app);
@@ -1330,13 +1758,15 @@ void setup() {
   auto *criticalTask = new DisplayTaskContext{app, &app->criticalChannel};
 
   xTaskCreate(sensorTask, "SensorTask", 4096, app, 2, nullptr);
+  xTaskCreate(inferenceTask, "TinyMLTask", 4096, app, 2, nullptr);
   xTaskCreate(displayTask, "DisplayNormal", 4096, normalTask, 1, nullptr);
   xTaskCreate(displayTask, "DisplayWarning", 4096, warningTask, 1, nullptr);
   xTaskCreate(displayTask, "DisplayCritical", 4096, criticalTask, 1, nullptr);
   xTaskCreate(deviceTask, "DeviceTask", 4096, app, 2, nullptr);
+  xTaskCreate(cloudTask, "CloudTask", 8192, app, 1, nullptr);
   xTaskCreate(webServerTask, "WebServerTask", 8192, app, 1, nullptr);
 
-  Serial.println("[System] Task 4 AP dashboard is running");
+  Serial.println("[System] Task 6 CoreIOT dashboard is running");
 }
 
 void loop() {

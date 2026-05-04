@@ -1,0 +1,64 @@
+{
+  "seed": 42,
+  "dataset": {
+    "total_samples": 4800,
+    "train_samples": 3840,
+    "test_samples": 960,
+    "source_counts": {
+      "uniform": 3200,
+      "boundary": 1600
+    },
+    "label_counts": {
+      "normal": 429,
+      "warning": 1553,
+      "critical": 2818
+    },
+    "temperature_range_c": [
+      15.0,
+      38.0
+    ],
+    "humidity_range_percent": [
+      20.0,
+      95.0
+    ]
+  },
+  "model": {
+    "architecture": [
+      2,
+      10,
+      8,
+      3
+    ],
+    "activation": "relu",
+    "optimizer": "mini-batch gradient descent",
+    "learning_rate": 0.02,
+    "epochs": 1400,
+    "batch_size": 64
+  },
+  "metrics": {
+    "train_accuracy": 0.990625,
+    "test_accuracy": 0.99375,
+    "class_accuracy": {
+      "normal": 0.975609756097561,
+      "warning": 0.9935064935064936,
+      "critical": 0.9964912280701754
+    },
+    "confusion_matrix": [
+      [
+        80,
+        2,
+        0
+      ],
+      [
+        0,
+        306,
+        2
+      ],
+      [
+        0,
+        2,
+        568
+      ]
+    ]
+  }
+}

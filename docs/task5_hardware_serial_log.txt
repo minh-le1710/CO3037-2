@@ -1,0 +1,32 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x420807be
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+[LCD] Connected at 0x21
+[TinyML] Accuracy: 99.38% on 960 samples
+[TinyML] Avg inference latency: 9.86 us
+[TinyML] Confusion matrix:
+[TinyML]   0 | 80 2 0
+[TinyML]   1 | 0 306 2
+[TinyML]   2 | 0 2 568
+[WiFi] Requested AP password is shorter than 8 characters; starting open AP fallback
+[WiFi] SSID: CO3037_IOT
+[WiFi] IP: 192.168.4.1
+[System] Task 5 TinyML dashboard is running
+[Sensor] T=26.1 C, H=50.7 %
+[TinyML] Bình thường (99.6%) for T=26.1 C, H=50.7 %
+[Display:NORMAL] T=26.1 C, H=50.7 %
+[Sensor] T=26.1 C, H=50.6 %
+[TinyML] Bình thường (99.6%) for T=26.1 C, H=50.6 %
+[Display:NORMAL] T=26.1 C, H=50.6 %
+[Sensor] T=26.1 C, H=50.6 %
+[TinyML] Bình thường (99.6%) for T=26.1 C, H=50.6 %
+[Display:6.0 C, H=50.5 %
+[TinyML] Bình thường (99.6%) for T=26.0 C, H=50.5 %
+[Display:NORMAL] T=26.0 C, H=50.5 %
