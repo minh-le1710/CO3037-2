@@ -1,295 +1,253 @@
-#define LED_PIN 48
-#define SDA_PIN GPIO_NUM_11
-#define SCL_PIN GPIO_NUM_12
-#define NUM_PIXELS 4
-#define MY_LED 4
+#include <Arduino.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
 
-#include <WiFi.h>
-#include <Arduino_MQTT_Client.h>
-#include <ThingsBoard.h>
 #include "DHT20.h"
-#include "Wire.h"
-#include <ArduinoOTA.h>
 
-// ================== CẤU HÌNH PHẦN CỨNG ==================
+enum class DisplayState : uint8_t {
+  Normal,
+  Warning,
+  Critical,
+};
 
-// LED đơn cho Task 1 – mình dùng chân R của module RGB
+struct SensorReading {
+  float temperatureC;
+  float humidityPercent;
+  DisplayState state;
+};
 
-// DHT22 (cảm biến T/H)
+struct StateChannel {
+  SemaphoreHandle_t semaphore;
+  QueueHandle_t queue;
+  const char *title;
+  const char *note;
+};
 
+struct AppContext {
+  TwoWire *wire;
+  DHT20 sensor;
+  LiquidCrystal_I2C *lcd;
+  SemaphoreHandle_t lcdMutex;
+  StateChannel normalChannel;
+  StateChannel warningChannel;
+  StateChannel criticalChannel;
+  int sdaPin;
+  int sclPin;
+};
 
-// NeoPixel (WS2812) cho Task 2
-// Chân S (DIN) của dải led nối vào NEO_PIN
+struct DisplayTaskContext {
+  AppContext *app;
+  StateChannel *channel;
+};
 
-// ================== RTOS HANDLE & BIẾN DÙNG CHUNG ==================
-
-TaskHandle_t      taskHandleSensor   = NULL;
-TaskHandle_t      taskHandleLED      = NULL;
-TaskHandle_t      taskHandleNeoPixel = NULL;
-
-SemaphoreHandle_t xTempSemaphore     = NULL;   // cho Task 1 (LED theo T)
-SemaphoreHandle_t xHumSemaphore      = NULL;   // cho Task 2 (Neo theo H)
-
-volatile float g_temperature = 0.0f;
-volatile float g_humidity    = 0.0f;
-
-// ================== HÀM TIỆN ÍCH CHO LED ĐƠN (TASK 1) ==================
-
-// Nếu LED là common cathode (chân chung GND) thì ON = HIGH.
-// Nếu common anode (chân chung 3V3) thì đổi LED_ACTIVE_HIGH = false.
-const bool LED_ACTIVE_HIGH = true;
-
-void ledOn()
-{
-  digitalWrite(LED_PIN, LED_ACTIVE_HIGH ? HIGH : LOW);
+bool isI2cDevicePresent(TwoWire &wire, uint8_t address) {
+  wire.beginTransmission(address);
+  return wire.endTransmission() == 0;
 }
 
-void ledOff()
-{
-  digitalWrite(LED_PIN, LED_ACTIVE_HIGH ? LOW : HIGH);
-}
+uint8_t detectLcdAddress(TwoWire &wire) {
+  const uint8_t preferredAddresses[] = {0x27, 0x3F, 0x26, 0x3E};
 
-// ---- 3 PATTERN NHẤP NHÁY TƯƠNG ỨNG 3 VÙNG NHIỆT ĐỘ ----
-
-// COOL: T < 25°C  → nháy chậm, 2 lần
-void patternCool()
-{
-  Serial.println("[LED] Mode: COOL (slow blink, 2 times)");
-  for (int i = 0; i < 2; ++i)
-  {
-    ledOn();
-    vTaskDelay(pdMS_TO_TICKS(800));
-    ledOff();
-    vTaskDelay(pdMS_TO_TICKS(800));
-  }
-}
-
-// NORMAL: 25°C ≤ T < 30°C → nháy trung bình, 4 lần
-void patternNormal()
-{
-  Serial.println("[LED] Mode: NORMAL (medium blink, 4 times)");
-  for (int i = 0; i < 4; ++i)
-  {
-    ledOn();
-    vTaskDelay(pdMS_TO_TICKS(300));
-    ledOff();
-    vTaskDelay(pdMS_TO_TICKS(300));
-  }
-}
-
-// HOT: T ≥ 30°C → nháy nhanh, 6 lần
-void patternHot()
-{
-  Serial.println("[LED] Mode: HOT (fast blink, 6 times)");
-  for (int i = 0; i < 6; ++i)
-  {
-    ledOn();
-    vTaskDelay(pdMS_TO_TICKS(120));
-    ledOff();
-    vTaskDelay(pdMS_TO_TICKS(120));
-  }
-}
-
-// ================== HÀM VẼ THANH ĐỘ ẨM 10 MỨC (TASK 2) ==================
-//
-// Mapping:
-//   - LED 0..2  (mức 1–3):  xanh lá  – độ ẩm thấp (ok)
-//   - LED 3..6  (mức 4–7):  vàng     – trung bình
-//   - LED 7..9  (mức 8–10): đỏ       – ẩm cao / nguy hiểm
-//
-void showHumidityBar(float hum)
-{
-  // Quy đổi 0–100% -> 0..NEO_COUNT (0..10)
-  int level = (int)round((hum / 100.0f) * NEO_COUNT);
-  level = constrain(level, 0, NEO_COUNT);
-
-  strip.clear();
-
-  for (int i = 0; i < level; ++i)
-  {
-    uint8_t r, g, b;
-
-    if (i < 3) {
-      // mức 1-3 → xanh lá
-      r = 0;   g = 255; b = 0;
-    } else if (i < 7) {
-      // mức 4-7 → vàng
-      r = 255; g = 255; b = 0;
-    } else {
-      // mức 8-10 → đỏ
-      r = 255; g = 0;   b = 0;
-    }
-
-    strip.setPixelColor(i, strip.Color(r, g, b));
-  }
-
-  // các led từ "level" tới 9 mặc định là off
-  strip.show();
-
-  Serial.print("[NeoPixel] hum = ");
-  Serial.print(hum);
-  Serial.print(" %, level = ");
-  Serial.println(level);
-}
-
-// ================== TASK ĐỌC DHT22 (SENSOR TASK) ==================
-
-void vTaskSensor(void *pvParameters)
-{
-  (void)pvParameters;
-
-  for (;;)
-  {
-    float t = dht.readTemperature();  // °C
-    float h = dht.readHumidity();     // %
-
-    if (isnan(t) || isnan(h))
-    {
-      Serial.println("[Sensor] Failed to read from DHT22!");
-      // không give semaphore nếu đọc lỗi
-    }
-    else
-    {
-      g_temperature = t;
-      g_humidity    = h;
-
-      Serial.print("[Sensor] Temperature = ");
-      Serial.print(g_temperature);
-      Serial.print(" *C, Humidity = ");
-      Serial.print(g_humidity);
-      Serial.println(" %");
-
-      // Thông báo cho Task 1 và Task 2
-      xSemaphoreGive(xTempSemaphore);
-      xSemaphoreGive(xHumSemaphore);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(2000));   // chu kỳ đọc ~2s
-  }
-}
-
-// ================== TASK LED ĐƠN (TASK 1) ==================
-
-void vTaskLED(void *pvParameters)
-{
-  (void)pvParameters;
-
-  pinMode(LED_PIN, OUTPUT);
-  ledOff();
-
-  for (;;)
-  {
-    if (xSemaphoreTake(xTempSemaphore, portMAX_DELAY) == pdTRUE)
-    {
-      float temp = g_temperature;
-
-      Serial.print("[LED] Received new temperature = ");
-      Serial.print(temp);
-      Serial.println(" *C");
-
-      if (temp < 25.0f)
-      {
-        patternCool();
-      }
-      else if (temp < 30.0f)
-      {
-        patternNormal();
-      }
-      else
-      {
-        patternHot();
-      }
-
-      ledOff();
+  for (uint8_t address : preferredAddresses) {
+    if (isI2cDevicePresent(wire, address)) {
+      return address;
     }
   }
+
+  for (uint8_t address = 0x08; address <= 0x77; ++address) {
+    if (address == 0x38) {
+      continue;
+    }
+    if (isI2cDevicePresent(wire, address)) {
+      return address;
+    }
+  }
+
+  return 0;
 }
 
-// ================== TASK NEOPIXEL (TASK 2) ==================
+DisplayState classifyReading(float temperatureC, float humidityPercent) {
+  const bool criticalTemperature = (temperatureC < 20.0f) || (temperatureC >= 32.0f);
+  const bool criticalHumidity = (humidityPercent < 30.0f) || (humidityPercent > 80.0f);
 
-void vTaskNeoPixel(void *pvParameters)
-{
-  (void)pvParameters;
+  if (criticalTemperature || criticalHumidity) {
+    return DisplayState::Critical;
+  }
 
-  strip.begin();
-  strip.setBrightness(60);    // giảm chói, có thể chỉnh 0–255
-  strip.clear();
-  strip.show();
+  const bool warningTemperature = (temperatureC < 23.0f) || (temperatureC >= 29.0f);
+  const bool warningHumidity = (humidityPercent < 40.0f) || (humidityPercent > 70.0f);
 
-  for (;;)
-  {
-    if (xSemaphoreTake(xHumSemaphore, portMAX_DELAY) == pdTRUE)
-    {
-      float hum = g_humidity;
-      Serial.print("[NeoPixel] Received new humidity = ");
-      Serial.print(hum);
-      Serial.println(" %");
+  if (warningTemperature || warningHumidity) {
+    return DisplayState::Warning;
+  }
 
-      // vẽ thanh mức độ ẩm
-      showHumidityBar(hum);
+  return DisplayState::Normal;
+}
+
+StateChannel *selectChannel(AppContext *app, DisplayState state) {
+  switch (state) {
+    case DisplayState::Normal:
+      return &app->normalChannel;
+    case DisplayState::Warning:
+      return &app->warningChannel;
+    case DisplayState::Critical:
+      return &app->criticalChannel;
+  }
+
+  return nullptr;
+}
+
+void printPaddedLine(LiquidCrystal_I2C &lcd, uint8_t row, const char *text) {
+  char paddedLine[17];
+  snprintf(paddedLine, sizeof(paddedLine), "%-16.16s", text);
+  lcd.setCursor(0, row);
+  lcd.print(paddedLine);
+}
+
+void renderReading(AppContext *app, const SensorReading &reading, const StateChannel &channel) {
+  if (app->lcd == nullptr) {
+    return;
+  }
+
+  if (xSemaphoreTake(app->lcdMutex, pdMS_TO_TICKS(250)) != pdTRUE) {
+    return;
+  }
+
+  char line1[17];
+  char line2[17];
+
+  snprintf(line1, sizeof(line1), "%-8s%4.1fC", channel.title, reading.temperatureC);
+  snprintf(line2, sizeof(line2), "H:%4.1f%% %-6s", reading.humidityPercent, channel.note);
+
+  printPaddedLine(*app->lcd, 0, line1);
+  printPaddedLine(*app->lcd, 1, line2);
+
+  xSemaphoreGive(app->lcdMutex);
+}
+
+void sensorTask(void *pvParameters) {
+  auto *app = static_cast<AppContext *>(pvParameters);
+  constexpr TickType_t samplePeriod = pdMS_TO_TICKS(2000);
+
+  for (;;) {
+    app->sensor.read();
+
+    const float temperatureC = app->sensor.getTemperature();
+    const float humidityPercent = app->sensor.getHumidity();
+
+    if (isnan(temperatureC) || isnan(humidityPercent)) {
+      Serial.println("[Sensor] Failed to read DHT20 data");
+      vTaskDelay(samplePeriod);
+      continue;
     }
+
+    SensorReading reading = {
+      temperatureC,
+      humidityPercent,
+      classifyReading(temperatureC, humidityPercent),
+    };
+
+    StateChannel *targetChannel = selectChannel(app, reading.state);
+    if (targetChannel != nullptr) {
+      xQueueOverwrite(targetChannel->queue, &reading);
+      xSemaphoreGive(targetChannel->semaphore);
+    }
+
+    Serial.printf("[Sensor] T=%.1f C, H=%.1f %%\r\n", temperatureC, humidityPercent);
+    vTaskDelay(samplePeriod);
   }
 }
 
-// ================== SETUP & LOOP ==================
+void displayTask(void *pvParameters) {
+  auto *taskContext = static_cast<DisplayTaskContext *>(pvParameters);
+  SensorReading reading = {};
 
-void setup()
-{
+  for (;;) {
+    if (xSemaphoreTake(taskContext->channel->semaphore, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+
+    if (xQueueReceive(taskContext->channel->queue, &reading, 0) != pdPASS) {
+      continue;
+    }
+
+    renderReading(taskContext->app, reading, *taskContext->channel);
+    Serial.printf(
+      "[Display:%s] T=%.1f C, H=%.1f %%\r\n",
+      taskContext->channel->title,
+      reading.temperatureC,
+      reading.humidityPercent
+    );
+  }
+}
+
+bool initializeLcd(AppContext *app) {
+  const uint8_t lcdAddress = detectLcdAddress(*app->wire);
+  if (lcdAddress == 0) {
+    Serial.println("[LCD] No supported I2C LCD found");
+    return false;
+  }
+
+  app->lcd = new LiquidCrystal_I2C(lcdAddress, 16, 2);
+  app->lcd->init();
+  app->lcd->backlight();
+
+  printPaddedLine(*app->lcd, 0, "Task 3 Monitor");
+  printPaddedLine(*app->lcd, 1, "Waiting sensor");
+
+  Serial.printf("[LCD] Connected at 0x%02X\r\n", lcdAddress);
+  return true;
+}
+
+bool initializeChannels(AppContext *app) {
+  app->lcdMutex = xSemaphoreCreateMutex();
+  app->normalChannel = {xSemaphoreCreateBinary(), xQueueCreate(1, sizeof(SensorReading)), "NORMAL", "OK"};
+  app->warningChannel = {xSemaphoreCreateBinary(), xQueueCreate(1, sizeof(SensorReading)), "WARNING", "CHECK"};
+  app->criticalChannel = {xSemaphoreCreateBinary(), xQueueCreate(1, sizeof(SensorReading)), "CRITICAL", "ALERT"};
+
+  return app->lcdMutex != nullptr &&
+         app->normalChannel.semaphore != nullptr &&
+         app->warningChannel.semaphore != nullptr &&
+         app->criticalChannel.semaphore != nullptr &&
+         app->normalChannel.queue != nullptr &&
+         app->warningChannel.queue != nullptr &&
+         app->criticalChannel.queue != nullptr;
+}
+
+void setup() {
   Serial.begin(115200);
-  delay(2000);
+  delay(1500);
 
-  Serial.println("=== Task 1 & Task 2: DHT22 + Single LED (Temp) + NeoPixel 10-level Humidity Bar ===");
+  auto *app = new AppContext{};
+  app->wire = &Wire;
+  app->lcd = nullptr;
+  app->sdaPin = GPIO_NUM_11;
+  app->sclPin = GPIO_NUM_12;
 
-  dht.begin();
-
-  // Tạo binary semaphore
-  xTempSemaphore = xSemaphoreCreateBinary();
-  xHumSemaphore  = xSemaphoreCreateBinary();
-
-  if (xTempSemaphore == NULL || xHumSemaphore == NULL)
-  {
-    Serial.println("Failed to create semaphores!");
-    while (1) { delay(1000); }
+  if (!initializeChannels(app)) {
+    Serial.println("[RTOS] Failed to create semaphore or queue");
+    while (true) {
+      delay(1000);
+    }
   }
 
-  BaseType_t result;
+  app->wire->begin(app->sdaPin, app->sclPin);
+  app->sensor.begin();
 
-  // Task đọc sensor
-  result = xTaskCreate(
-    vTaskSensor,
-    "SensorTask",
-    4096,
-    NULL,
-    3,                    // ưu tiên cao nhất
-    &taskHandleSensor
-  );
-  if (result != pdPASS) Serial.println("Failed to create SensorTask");
+  initializeLcd(app);
 
-  // Task LED theo nhiệt độ (Task 1)
-  result = xTaskCreate(
-    vTaskLED,
-    "LEDTask",
-    4096,
-    NULL,
-    2,
-    &taskHandleLED
-  );
-  if (result != pdPASS) Serial.println("Failed to create LEDTask");
+  auto *normalTask = new DisplayTaskContext{app, &app->normalChannel};
+  auto *warningTask = new DisplayTaskContext{app, &app->warningChannel};
+  auto *criticalTask = new DisplayTaskContext{app, &app->criticalChannel};
 
-  // Task NeoPixel theo độ ẩm (Task 2)
-  result = xTaskCreate(
-    vTaskNeoPixel,
-    "NeoTask",
-    4096,
-    NULL,
-    1,
-    &taskHandleNeoPixel
-  );
-  if (result != pdPASS) Serial.println("Failed to create NeoTask");
+  xTaskCreate(sensorTask, "SensorTask", 4096, app, 2, nullptr);
+  xTaskCreate(displayTask, "DisplayNormal", 4096, normalTask, 1, nullptr);
+  xTaskCreate(displayTask, "DisplayWarning", 4096, warningTask, 1, nullptr);
+  xTaskCreate(displayTask, "DisplayCritical", 4096, criticalTask, 1, nullptr);
+
+  Serial.println("[System] Task 3 monitor is running");
 }
 
-void loop()
-{
-  // Không dùng loop; mọi thứ chạy trong FreeRTOS task
+void loop() {
   vTaskDelay(pdMS_TO_TICKS(1000));
 }

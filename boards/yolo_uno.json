@@ -1,0 +1,56 @@
+{
+  "build": {
+    "arduino": {
+      "ldscript": "esp32s3_out.ld",
+      "partitions": "default.csv"
+    },
+    "boot": "qio",
+    "core": "esp32",
+    "extra_flags": [
+      "-DARDUINO_YOLO_UNO",
+      "-DARDUINO_RUNNING_CORE=1",
+      "-DARDUINO_EVENT_RUNNING_CORE=1"
+    ],
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "dio",
+    "hwids": [
+      [
+        "0x303A",
+        "0x1001"
+      ]
+    ],
+    "mcu": "esp32s3",
+    "memory_type": "qio_qspi",
+    "psram_type": "qspi",
+    "variant": "yolo_uno",
+    "variants_dir": "variants"
+  },
+  "connectivity": [
+    "bluetooth",
+    "wifi"
+  ],
+  "debug": {
+    "default_tool": "esp-builtin",
+    "onboard_tools": [
+      "esp-builtin"
+    ],
+    "openocd_target": "esp32s3.cfg"
+  },
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "name": "OhStem Yolo UNO (ESP32-S3)",
+  "upload": {
+    "flash_size": "4MB",
+    "maximum_ram_size": 327680,
+    "maximum_size": 1310720,
+    "require_upload_port": true,
+    "speed": 921600,
+    "use_1200bps_touch": false,
+    "wait_for_upload_port": false
+  },
+  "url": "https://docs.ohstem.vn/en/latest/yolo_uno/yolo_uno_khoi_lenh/gioi_thieu_yolo_uno.html",
+  "vendor": "OhStem Education"
+}
