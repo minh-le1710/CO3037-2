@@ -1,0 +1,19 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4202447e
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+[System] Task 1 RTOS temperature blink is starting
+[Rule] COOL   : T < 24 C -> slow blink
+[Rule] NORMAL : 24 C <= T < 29 C -> double blink
+[Rule] HOT    : T >= 29 C -> fast blink
+[Sensor] T=26.1 C, H=49.3 % -> NORMAL
+[Sync] Behavior changed, release semaphore for NORMAL
+[Sensor] T=26.1 C, H=49.3 % -> NORMAL
+[Sensor] T=26.1 C, H=49.3 % -> NORMAL
+[Sensor] T=26.1 C, H=49.2 % -> NORMAL
