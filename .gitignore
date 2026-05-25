@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+CO3037-report.latest.pdf
+CO3037-report-*.pdf
+report/build/

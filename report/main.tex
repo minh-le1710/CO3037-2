@@ -1,0 +1,582 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T5]{fontenc}
+  \usepackage[vietnamese]{babel}
+\else
+  \usepackage{fontspec}
+  \setmainfont{Times New Roman}
+\fi
+
+\usepackage[a4paper,total={160mm,240mm},left=30mm,top=30mm]{geometry}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{calc}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{lastpage}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{setspace}
+
+\hypersetup{
+  unicode=true,
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black
+}
+
+\setstretch{1.15}
+\setlength{\headheight}{40pt}
+\pagestyle{fancy}
+\fancyhead{}
+\fancyhead[L]{
+  \begin{tabular}{rl}
+    \begin{picture}(25,15)(0,0)
+      \put(0,-8){\includegraphics[width=10mm,height=10mm]{Images/hcmut.png}}
+    \end{picture} &
+    \begin{tabular}{l}
+      \textbf{Trường Đại học Bách Khoa - Đại học Quốc gia TP.HCM} \\
+      \textbf{Khoa Khoa học \& Kỹ thuật Máy tính}
+    \end{tabular}
+  \end{tabular}
+}
+\fancyfoot{}
+\fancyfoot[L]{\scriptsize Bài tập lớn Phát triển ứng dụng Internet of Things (CO3037)}
+\fancyfoot[R]{\scriptsize Trang \thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0.3pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\begin{document}
+\pagenumbering{gobble}
+\hypersetup{pageanchor=false}
+
+\begin{titlepage}
+\begin{tikzpicture}[remember picture, overlay]
+  \draw[line width=4pt] ($(current page.north west) + (0.4in,-0.5in)$) rectangle ($(current page.south east) + (-0.4in,0.5in)$);
+  \draw[line width=1.5pt]
+    ($(current page.north west) + (0.45in,-0.55in)$)
+    rectangle
+    ($(current page.south east) + (-0.45in,0.55in)$);
+\end{tikzpicture}
+
+\begin{center}
+\Large \textbf{ĐẠI HỌC QUỐC GIA THÀNH PHỐ HỒ CHÍ MINH} \\
+\vspace{0.2cm}
+\Large \textbf{TRƯỜNG ĐẠI HỌC BÁCH KHOA} \\
+\vspace{0.2cm}
+\Large \textbf{KHOA KHOA HỌC VÀ KĨ THUẬT MÁY TÍNH}
+\end{center}
+
+\vspace{0.3cm}
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[width=4cm]{Images/hcmut.png}
+\end{center}
+\end{figure}
+
+\begin{center}
+{\LARGE \textbf{BÁO CÁO BÀI TẬP LỚN}\par}
+\vspace{0.5cm}
+{\Large \textbf{PHÁT TRIỂN ỨNG DỤNG}\par}
+{\Large \textbf{INTERNET OF THINGS (CO3037)}\par}
+\end{center}
+\vspace{0.8cm}
+
+\begin{itemize}[label=--]
+  \item \Large \textbf{NHÓM SINH VIÊN THỰC HIỆN (SVTH):}
+  \\ \large \textbf{LÊ NHẬT MINH - 2212046}
+  \\ \large \textbf{LA ANH TÚ - 2112601}
+  \\ \large \textbf{GITHUB LINK:} \href{https://github.com/minh-le1710/CO3037-2}{minh-le1710/CO3037-2}
+\end{itemize}
+\vfill
+\begin{center}
+{\Large TP. Hồ Chí Minh, Tháng 12 / 2025}
+\end{center}
+\end{titlepage}
+
+\clearpage
+\hypersetup{pageanchor=true}
+\pagenumbering{arabic}
+\tableofcontents
+\newpage
+
+\section{Giới thiệu}
+
+Báo cáo trình bày quá trình xây dựng một hệ thống giám sát và điều khiển môi trường trên nền vi điều khiển ESP32-S3. Hệ thống được phát triển theo 6 task tăng dần về mức độ hoàn thiện, bắt đầu từ việc đọc cảm biến và điều khiển LED, sau đó mở rộng sang hiển thị trực quan, web dashboard, suy luận TinyML và cuối cùng là publish dữ liệu lên nền tảng CoreIOT Cloud qua MQTT.
+
+Trong quá trình thực hiện, mã nguồn được tổ chức theo từng nhánh tương ứng với từng task. Ở các mốc khác nhau, phần cứng có sự thay đổi giữa \texttt{ESP32-S3 + DHT22 + OLED} và \texttt{Yolo UNO (ESP32-S3) + DHT20 + LCD I2C}. Vì vậy nội dung báo cáo được trình bày bám theo \textbf{nhánh thực hiện của từng task} để phản ánh đúng cách triển khai thực tế.
+
+\subsection{Ánh xạ task và nhánh mã nguồn}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.15\textwidth} >{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.45\textwidth}}
+\toprule
+\textbf{Task} & \textbf{Nhánh / tài liệu} & \textbf{Nội dung chính} \\
+\midrule
+Task 1 & \texttt{btl\_iot\_credit-1} & RTOS + semaphore + LED nháy theo dải nhiệt độ \\
+Task 2 & \texttt{credit-2} & NeoPixel hiển thị độ ẩm theo thanh 10 mức \\
+Task 3 & \texttt{btl\_iot\_credit\_3} & LCD I2C hiển thị trạng thái môi trường \\
+Task 4 & \texttt{credit-4} & Web server ở chế độ Access Point để điều khiển thiết bị \\
+Task 5 & \texttt{btl\_iot\_credit\_5}, \texttt{docs/task5\_tinyml.md} & Huấn luyện, nhúng và đánh giá TinyML trên thiết bị \\
+Task 6 & \texttt{btl\_iot\_credit\_6}, \texttt{docs/task6\_coreiot.md} & Publish telemetry lên CoreIOT Cloud Server \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Mục tiêu tổng quát của hệ thống}
+
+Chuỗi bài tập lớn được triển khai theo hướng tăng dần độ phức tạp:
+\begin{itemize}
+  \item Bắt đầu từ một tác vụ RTOS đơn giản: đọc cảm biến và điều khiển LED theo điều kiện nhiệt độ.
+  \item Bổ sung khả năng hiển thị mức độ ẩm qua NeoPixel để tăng tính trực quan.
+  \item Nâng lên hiển thị trạng thái tổng quát \texttt{NORMAL / WARNING / CRITICAL} trên thiết bị ngoại vi I2C.
+  \item Mở rộng sang giao tiếp mạng cục bộ qua WiFi Access Point và web dashboard.
+  \item Tích hợp TinyML để thay thế phân loại thủ công bằng mô hình suy luận nhúng.
+  \item Hoàn thiện theo định hướng IoT thực thụ bằng cách đẩy telemetry lên cloud.
+\end{itemize}
+
+\section{Task 1: RTOS và LED cảnh báo theo nhiệt độ}
+
+\subsection{Mục tiêu}
+
+Task 1 yêu cầu xây dựng một cơ chế cảnh báo nhiệt độ đơn giản nhưng có tổ chức đúng tinh thần hệ điều hành thời gian thực:
+\begin{itemize}
+  \item Đọc cảm biến nhiệt độ, độ ẩm \texttt{DHT20} theo chu kỳ.
+  \item Phân loại nhiệt độ thành ba vùng \texttt{COOL / NORMAL / HOT}.
+  \item Điều khiển một LED duy nhất bằng ba kiểu nháy khác nhau tương ứng từng vùng nhiệt độ.
+  \item Dùng \textbf{binary semaphore} để đồng bộ giữa task đọc cảm biến và task nháy LED.
+\end{itemize}
+
+\subsection{Phần cứng và luật điều khiển}
+
+Ở nhánh \texttt{btl\_iot\_credit-1}, hệ thống dùng bo \texttt{Yolo UNO} với cảm biến \texttt{DHT20} qua giao tiếp I2C (\texttt{SDA = GPIO11}, \texttt{SCL = GPIO12}) và LED điều khiển tại \texttt{GPIO48}. Nhiệt độ được chia thành ba dải như ở Bảng~\ref{tab:task1-band}.
+
+\begin{table}[H]
+\centering
+\caption{Các vùng nhiệt độ và mẫu nháy LED của Task 1}
+\label{tab:task1-band}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.22\textwidth} >{\raggedright\arraybackslash}p{0.62\textwidth}}
+\toprule
+\textbf{Vùng} & \textbf{Hành vi LED} \\
+\midrule
+\texttt{COOL}, $T < 24^\circ C$ & Nháy chậm: bật 1 s, tắt 1 s \\
+\texttt{NORMAL}, $24^\circ C \leq T < 29^\circ C$ & Nháy đôi: 180 ms bật, 180 ms tắt, 180 ms bật, 900 ms tắt \\
+\texttt{HOT}, $T \geq 29^\circ C$ & Nháy nhanh: 120 ms bật, 120 ms tắt \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thiết kế firmware}
+
+Kiến trúc RTOS của Task 1 gồm hai task chính:
+\begin{itemize}
+  \item \texttt{sensorTask}: đọc DHT20 mỗi 2 giây, phân loại dải nhiệt độ, cập nhật vùng dữ liệu dùng chung.
+  \item \texttt{ledTask}: chờ thông báo từ task cảm biến rồi chạy pattern nhấp nháy tương ứng.
+\end{itemize}
+
+Hai semaphore được dùng đúng mục đích:
+\begin{itemize}
+  \item \texttt{stateMutex}: bảo vệ dữ liệu dùng chung \texttt{latestTemperatureC}, \texttt{latestHumidityPercent}, \texttt{behavior}, \texttt{hasReading}.
+  \item \texttt{behaviorChanged}: binary semaphore dùng như tín hiệu sự kiện, chỉ được \texttt{give} khi vùng nhiệt độ thay đổi.
+\end{itemize}
+
+Điểm đáng giá trong cách cài đặt là \texttt{ledTask} không delay ``mù'' toàn bộ một chu kỳ nháy. Thay vào đó, ở từng khoảng bật/tắt LED, task dùng \texttt{xSemaphoreTake(..., timeout)} để chờ ngắt quãng. Nhờ vậy nếu nhiệt độ chuyển vùng trong lúc LED đang nháy, pattern cũ sẽ bị ngắt gần như tức thời và chuyển sang pattern mới mà không cần polling liên tục.
+
+\subsection{Kết quả và nhận xét}
+
+Task 1 đáp ứng đúng yêu cầu của đề:
+\begin{itemize}
+  \item Có ba kiểu nháy LED khác nhau theo nhiệt độ.
+  \item Có tách task rõ ràng giữa đo cảm biến và điều khiển hiển thị.
+  \item Có dùng semaphore đúng vai trò đồng bộ, không chỉ dùng delay tuần tự.
+\end{itemize}
+
+So với một chương trình \texttt{loop()} truyền thống, phiên bản RTOS này linh hoạt hơn rõ rệt vì có thể mở rộng tiếp sang Task 2, Task 3 và các chức năng mạng mà không phải viết lại lõi điều khiển.
+
+\section{Task 2: NeoPixel hiển thị độ ẩm}
+
+\subsection{Mục tiêu}
+
+Task 2 mở rộng hệ thống bằng một cơ chế hiển thị trực quan cho độ ẩm môi trường:
+\begin{itemize}
+  \item Tận dụng lại dữ liệu độ ẩm từ cảm biến môi trường.
+  \item Quy đổi độ ẩm 0--100\% thành thanh hiển thị 10 mức.
+  \item Dùng màu sắc để giúp nhận biết nhanh mức độ ẩm thấp, trung bình hay cao.
+  \item Tổ chức logic hiển thị bằng một task riêng, đồng bộ với task cảm biến qua semaphore.
+\end{itemize}
+
+\subsection{Nguyên lý hiển thị}
+
+Trong nhánh \texttt{credit-2}, độ ẩm được ánh xạ thành số LED sáng trên dải NeoPixel. Hàm \texttt{showHumidityBar(hum)} quy đổi:
+\[
+  \texttt{level} = \mathrm{round}\left(\frac{\texttt{hum}}{100} \times 10\right)
+\]
+sau đó giới hạn giá trị trong đoạn từ 0 đến 10.
+
+\begin{table}[H]
+\centering
+\caption{Quy ước màu của dải NeoPixel ở Task 2}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.54\textwidth}}
+\toprule
+\textbf{Nhóm LED} & \textbf{Ý nghĩa} \\
+\midrule
+LED 1--3 màu xanh lá & Mức ẩm thấp hoặc vùng dễ chịu \\
+LED 4--7 màu vàng & Độ ẩm trung bình, cần theo dõi \\
+LED 8--10 màu đỏ & Độ ẩm cao, có nguy cơ bí hoặc ẩm mốc \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thiết kế firmware}
+
+Task 2 vẫn giữ \texttt{sensorTask} làm nơi đọc dữ liệu gốc, nhưng phần hiển thị được tách riêng qua:
+\begin{itemize}
+  \item \texttt{xHumSemaphore}: task cảm biến \texttt{give} mỗi khi có mẫu độ ẩm hợp lệ mới.
+  \item \texttt{vTaskNeoPixel}: chờ semaphore, đọc \texttt{g\_humidity} rồi cập nhật thanh LED.
+\end{itemize}
+
+Ưu điểm của cách làm này là:
+\begin{itemize}
+  \item Phần điều khiển NeoPixel không làm chậm chu kỳ đọc cảm biến.
+  \item Dễ thay đổi logic hiển thị mà không ảnh hưởng Task 1.
+  \item Dễ tích hợp tiếp với các task hiển thị và TinyML ở các mốc sau.
+\end{itemize}
+
+\subsection{Nhận xét}
+
+Task 2 cho thấy cách dùng RTOS không chỉ phù hợp với xử lý song song mà còn giúp \textbf{phân tách trách nhiệm} rất rõ ràng: một task chịu trách nhiệm thu thập dữ liệu, task còn lại chuyên trách hiển thị. Về mặt trải nghiệm, thanh NeoPixel mang lại cảm giác ``đọc nhanh bằng mắt'' tốt hơn nhiều so với việc chỉ xem số độ ẩm trên serial monitor.
+
+\section{Task 3: Hiển thị trạng thái môi trường trên LCD I2C}
+
+\subsection{Mục tiêu}
+
+Task 3 nâng cấp mức hiển thị từ ``giá trị riêng lẻ'' sang ``trạng thái hệ thống''. Ở nhánh \texttt{btl\_iot\_credit\_3}, hệ thống dùng \texttt{LCD I2C 16x2} để thông báo ba trạng thái:
+\begin{itemize}
+  \item \texttt{NORMAL}
+  \item \texttt{WARNING}
+  \item \texttt{CRITICAL}
+\end{itemize}
+
+Điểm đáng chú ý là trong nhánh này, chương trình tổ chức ba ``kênh trạng thái'' riêng biệt bằng queue và semaphore, thay vì chỉ cập nhật hiển thị theo một luồng xử lý duy nhất.
+
+\subsection{Luật phân loại}
+
+Mỗi mẫu đo gồm nhiệt độ và độ ẩm được đưa qua hàm \texttt{classifyReading(temp, hum)}. Các ngưỡng sử dụng trong nhánh này được cho ở Bảng~\ref{tab:task3-thresholds}.
+
+\begin{table}[H]
+\centering
+\caption{Ngưỡng phân loại ở Task 3}
+\label{tab:task3-thresholds}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.22\textwidth} >{\raggedright\arraybackslash}p{0.62\textwidth}}
+\toprule
+\textbf{Trạng thái} & \textbf{Điều kiện} \\
+\midrule
+\texttt{CRITICAL} & $T < 20^\circ C$ hoặc $T \geq 32^\circ C$, hoặc $H < 30\%$ hoặc $H > 80\%$ \\
+\texttt{WARNING} & Không thuộc \texttt{CRITICAL} và thỏa $T < 23^\circ C$ hoặc $T \geq 29^\circ C$, hoặc $H < 40\%$ hoặc $H > 70\%$ \\
+\texttt{NORMAL} & Các trường hợp còn lại \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Kiến trúc đồng bộ}
+
+Task 3 không chỉ có một semaphore như các task trước, mà tổ chức thành các thành phần sau:
+\begin{itemize}
+  \item \texttt{sensorTask}: đọc DHT20, phân loại trạng thái, gửi mẫu đo vào queue tương ứng.
+  \item \texttt{normalChannel}, \texttt{warningChannel}, \texttt{criticalChannel}: mỗi kênh có một queue kích thước 1 và một binary semaphore.
+  \item \texttt{displayTask}: được tạo thành ba instance, mỗi instance phụ trách một trạng thái.
+  \item \texttt{lcdMutex}: mutex bảo vệ LCD, tránh hai task cùng ghi I2C tại một thời điểm.
+\end{itemize}
+
+Mỗi khi có dữ liệu mới, \texttt{sensorTask} sẽ chọn đúng kênh đích bằng \texttt{selectChannel()}, dùng \texttt{xQueueOverwrite()} để giữ lại mẫu mới nhất, rồi \texttt{give} semaphore cho task hiển thị tương ứng. Cách làm này giúp hệ thống:
+\begin{itemize}
+  \item Không phải tự kiểm tra trạng thái liên tục trong task hiển thị.
+  \item Tránh backlog vì mỗi trạng thái chỉ giữ mẫu mới nhất.
+  \item Đảm bảo LCD luôn phản ánh đúng điều kiện hiện thời.
+\end{itemize}
+
+\subsection{Kết quả}
+
+Task 3 biến hệ thống từ dạng ``có cảm biến và LED'' thành một thiết bị giám sát môi trường hoàn chỉnh hơn:
+\begin{itemize}
+  \item Dòng 1 của LCD hiển thị nhiệt độ.
+  \item Dòng 2 hiển thị độ ẩm và chú thích trạng thái như \texttt{OK}, \texttt{CHECK}, \texttt{ALERT}.
+  \item Việc tách ba kênh trạng thái giúp code sạch, rõ vai trò và dễ mở rộng.
+\end{itemize}
+
+\section{Task 4: Web server điều khiển thiết bị qua WiFi AP}
+
+\subsection{Mục tiêu}
+
+Task 4 đưa hệ thống từ mức hiển thị cục bộ sang điều khiển không dây trong mạng nội bộ:
+\begin{itemize}
+  \item ESP32-S3 phát WiFi ở chế độ \textbf{Access Point}.
+  \item Tạo một web server để người dùng truy cập qua điện thoại hoặc máy tính.
+  \item Điều khiển hai thiết bị số từ giao diện web.
+  \item Duy trì đồng thời các task của cảm biến, LED, NeoPixel và hiển thị trạng thái.
+\end{itemize}
+
+\subsection{Thiết kế mạng và giao diện}
+
+Ở nhánh \texttt{credit-4}, ESP32-S3 khởi tạo:
+\begin{itemize}
+  \item SSID: \texttt{ESP32\_S3\_AP}
+  \item Mật khẩu: \texttt{12345678}
+  \item Web server cổng \texttt{80}
+\end{itemize}
+
+Hai thiết bị mẫu được gán vào:
+\begin{itemize}
+  \item \texttt{DEVICE1\_PIN = 2}
+  \item \texttt{DEVICE2\_PIN = 4}
+\end{itemize}
+
+Giao diện HTML/CSS được thiết kế theo dạng mini dashboard, gồm hai thẻ điều khiển và hai cặp nút \texttt{Turn ON}/\texttt{Turn OFF}. Phần hiển thị trạng thái dùng badge \texttt{ON/OFF} để người dùng quan sát nhanh.
+
+\subsection{Luồng xử lý HTTP}
+
+Web server cung cấp các route chính:
+\begin{itemize}
+  \item \texttt{/}: render trang điều khiển.
+  \item \texttt{/device1/on}, \texttt{/device1/off}: bật/tắt thiết bị 1.
+  \item \texttt{/device2/on}, \texttt{/device2/off}: bật/tắt thiết bị 2.
+\end{itemize}
+
+Khi người dùng bấm nút:
+\begin{itemize}
+  \item server cập nhật \texttt{device1State} hoặc \texttt{device2State},
+  \item gọi \texttt{applyDeviceState()} để xuất mức logic xuống GPIO,
+  \item trả mã \texttt{303 See Other} để trình duyệt tự quay lại trang chính.
+\end{itemize}
+
+Trong khi đó, vòng \texttt{loop()} vẫn chỉ làm hai việc rất ngắn:
+\begin{itemize}
+  \item \texttt{server.handleClient()}
+  \item \texttt{vTaskDelay(pdMS\_TO\_TICKS(10))}
+\end{itemize}
+Nhờ vậy CPU vẫn nhường thời gian cho các task RTOS khác.
+
+\subsection{Đánh giá}
+
+Task 4 là bước chuyển quan trọng vì nó biến hệ thống nhúng thành một nút IoT có giao diện điều khiển thực tế. Từ đây, thiết bị không còn phụ thuộc vào serial monitor hoặc các nút vật lý trên board mà đã có thể tương tác qua trình duyệt. Đây cũng là nền tảng trực tiếp để về sau bổ sung dashboard giàu dữ liệu hơn ở Task 5 và Task 6.
+
+\section{Task 5: TinyML - huấn luyện, đánh giá và nhúng mô hình}
+
+\subsection{Mục tiêu}
+
+Task 5 nhằm thay thế luật phân loại viết tay bằng một mô hình TinyML đủ nhỏ để chạy trực tiếp trên vi điều khiển. Mục tiêu cụ thể gồm:
+\begin{itemize}
+  \item Tạo tập dữ liệu nhiệt độ, độ ẩm cho bài toán phân loại trạng thái môi trường.
+  \item Huấn luyện một mạng nơ-ron gọn nhẹ.
+  \item Xuất trọng số thành \texttt{tinyml\_model.h} để firmware có thể suy luận trực tiếp.
+  \item Đo lại độ chính xác trên thiết bị thật thay vì chỉ đánh giá trên máy tính.
+\end{itemize}
+
+\subsection{Mô tả dataset và mô hình}
+
+Theo tài liệu \texttt{docs/task5\_tinyml.md} và \texttt{docs/task5\_metrics.json}, bộ dữ liệu gồm:
+\begin{itemize}
+  \item Tổng cộng \textbf{4800 mẫu}
+  \item \textbf{3840 mẫu train} và \textbf{960 mẫu test}
+  \item Hai đặc trưng đầu vào: \texttt{temperature\_c} và \texttt{humidity\_percent}
+  \item Ba nhãn đầu ra: \texttt{normal}, \texttt{warning}, \texttt{critical}
+\end{itemize}
+
+Dataset được tạo theo hai nguồn:
+\begin{itemize}
+  \item \textbf{Uniform samples}: phủ miền giá trị hoạt động chung.
+  \item \textbf{Boundary samples}: tăng mật độ mẫu quanh các ngưỡng quyết định để mô hình học tốt hơn ở vùng biên.
+\end{itemize}
+
+Kiến trúc mô hình được chọn là:
+\[
+2 \rightarrow 10 \rightarrow 8 \rightarrow 3
+\]
+với hàm kích hoạt \texttt{ReLU} và lớp ra softmax.
+
+\subsection{Kết quả huấn luyện}
+
+\begin{table}[H]
+\centering
+\caption{Chỉ số đánh giá TinyML của Task 5}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.45\textwidth} >{\raggedright\arraybackslash}p{0.25\textwidth}}
+\toprule
+\textbf{Chỉ số} & \textbf{Giá trị} \\
+\midrule
+Train accuracy & 99.06\% \\
+Test accuracy & 99.38\% \\
+Class accuracy -- normal & 97.56\% \\
+Class accuracy -- warning & 99.35\% \\
+Class accuracy -- critical & 99.65\% \\
+On-device replay accuracy & 99.38\% \\
+Average inference latency & 9.86 $\mu s$ \\
+Số mẫu replay trên thiết bị & 960 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Ma trận nhầm lẫn trên tập test:
+\[
+\begin{bmatrix}
+80 & 2 & 0 \\
+0 & 306 & 2 \\
+0 & 2 & 568
+\end{bmatrix}
+\]
+
+Các kết quả trên cho thấy mô hình đủ tốt để nhúng lên thiết bị thật mà vẫn đảm bảo suy luận gần như tức thời.
+
+\subsection{Tích hợp vào firmware}
+
+Trong các nhánh hoàn thiện của Task 5, mô hình được nhúng dưới dạng file header \texttt{include/tinyml\_model.h}. Sau khi cảm biến tạo ra một mẫu mới, dữ liệu sẽ đi qua pipeline:
+\begin{itemize}
+  \item \texttt{sensorTask} đọc \texttt{temp/hum}
+  \item \texttt{inferenceTask} chuẩn hóa dữ liệu, chạy \texttt{runTinyMlInference()}
+  \item kết quả gồm \texttt{state} và \texttt{confidence}
+  \item dữ liệu suy luận được dùng để cập nhật LCD, web dashboard và các vùng hiển thị khác
+\end{itemize}
+
+Một điểm mạnh của Task 5 là nhóm không dừng ở việc ``train được model'', mà còn có hàm \texttt{evaluateTinyMlOnDevice()} để replay toàn bộ 960 mẫu kiểm thử ngay trên vi điều khiển. Điều này chứng minh rằng mô hình không chỉ đúng trên máy tính mà còn đúng sau khi đã chuyển đổi sang mã suy luận C/C++ trên board.
+
+\subsection{Nhận xét}
+
+Task 5 là bước nâng cấp mang tính học thuật lẫn kỹ thuật:
+\begin{itemize}
+  \item Về học thuật, bài toán đã có quy trình đầy đủ: tạo dữ liệu, huấn luyện, đánh giá, nhúng, kiểm chứng lại.
+  \item Về kỹ thuật, TinyML được đặt vào đúng vị trí trung tâm của hệ thống, thay vì chỉ là một minh họa rời rạc.
+\end{itemize}
+
+\section{Task 6: Publish dữ liệu lên CoreIOT Cloud Server}
+
+\subsection{Mục tiêu}
+
+Task 6 là phần mở rộng riêng của CO3037, đưa hệ thống từ mô hình dashboard cục bộ sang một thiết bị IoT có khả năng kết nối cloud:
+\begin{itemize}
+  \item Kết nối WiFi ở chế độ \texttt{AP + STA}.
+  \item Duy trì web dashboard cục bộ như ở Task 5.
+  \item Kết nối MQTT đến \texttt{app.coreiot.io}.
+  \item Publish telemetry định kỳ lên CoreIOT.
+\end{itemize}
+
+\subsection{Kiến trúc phần mềm}
+
+Ở nhánh \texttt{btl\_iot\_credit\_6}, hệ thống được tổ chức thành nhiều task hoạt động song song:
+\begin{itemize}
+  \item \texttt{sensorTask}: đọc \texttt{DHT20} theo chu kỳ 2 giây.
+  \item \texttt{inferenceTask}: chạy TinyML và cập nhật snapshot toàn hệ thống.
+  \item \texttt{displayTask}: hiển thị trạng thái trên LCD I2C.
+  \item \texttt{deviceTask}: xử lý lệnh bật/tắt thiết bị nhận từ web dashboard.
+  \item \texttt{cloudTask}: lo toàn bộ phần Station WiFi, MQTT và publish telemetry.
+  \item \texttt{webServerTask}: phục vụ dashboard HTTP cục bộ.
+\end{itemize}
+
+Phần \texttt{DashboardSnapshot} đóng vai trò như một vùng trạng thái tổng hợp, nơi web dashboard và cloud task có thể đọc cùng một ảnh chụp hệ thống mà không cần truy cập trực tiếp vào nhiều biến rời rạc.
+
+\subsection{Access Point, Station và dashboard}
+
+Khác với Task 4 chỉ có Access Point, Task 6 chạy ở chế độ \texttt{WIFI\_MODE\_APSTA}. Thiết bị:
+\begin{itemize}
+  \item vẫn phát mạng cục bộ \texttt{CO3037\_IOT} để người dùng truy cập dashboard,
+  \item đồng thời dùng thông tin WiFi STA trong \texttt{include/cloud\_credentials.h} để đi Internet.
+\end{itemize}
+
+Dashboard web của Task 6 được thiết kế phong phú hơn nhiều so với Task 4:
+\begin{itemize}
+  \item hiển thị nhiệt độ, độ ẩm, trạng thái TinyML và độ tin cậy mô hình,
+  \item hiển thị tình trạng LCD, AP, STA và CoreIOT,
+  \item có lịch sử nhiệt độ/độ ẩm dạng biểu đồ SVG,
+  \item cho phép bật/tắt \texttt{Status LED} và \texttt{RGB Beacon} qua API \texttt{/api/device}.
+\end{itemize}
+
+\subsection{Telemetry gửi lên CoreIOT}
+
+Theo tài liệu \texttt{docs/task6\_coreiot.md}, mỗi chu kỳ publish gửi các trường sau:
+
+\begin{table}[H]
+\centering
+\caption{Telemetry của Task 6}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.34\textwidth} >{\raggedright\arraybackslash}p{0.44\textwidth}}
+\toprule
+\textbf{Trường} & \textbf{Ý nghĩa} \\
+\midrule
+\texttt{temperature} & Nhiệt độ đo được từ DHT20 \\
+\texttt{humidity} & Độ ẩm đo được từ DHT20 \\
+\texttt{tinyml\_confidence} & Độ tin cậy của nhãn TinyML \\
+\texttt{tinyml\_state} & Trạng thái suy luận: normal / warning / critical \\
+\texttt{tinyml\_accuracy} & Độ chính xác đo được khi replay trên thiết bị \\
+\texttt{rssi} & Cường độ tín hiệu WiFi hiện tại \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Bên cạnh telemetry, firmware còn publish một số attribute mô tả thiết bị như địa chỉ MAC, địa chỉ IP, SSID mạng đang kết nối và tên mô hình TinyML. Trong bản báo cáo này, thông tin nhạy cảm như token truy cập và mật khẩu WiFi được cố ý lược bỏ để tránh lộ cấu hình thật.
+
+\subsection{Kết quả thực nghiệm}
+
+Từ log serial của nhánh Task 6 có thể rút ra các điểm sau:
+\begin{itemize}
+  \item LCD được phát hiện thành công tại địa chỉ \texttt{0x21}.
+  \item TinyML đạt lại \textbf{99.38\%} trên 960 mẫu kiểm thử với độ trễ trung bình \textbf{9.86 $\mu s$}.
+  \item Access Point khởi động thành công với IP \texttt{192.168.4.1}.
+  \item Thiết bị kết nối được WiFi Station và thiết lập thành công kết nối MQTT tới CoreIOT.
+  \item Telemetry được publish định kỳ, ví dụ log \texttt{Published \#1 T=26.3 C, H=48.8\%}.
+\end{itemize}
+
+Điều này cho thấy Task 6 không chỉ là ``thêm thư viện cloud'', mà là một bước tích hợp hoàn chỉnh giữa cảm biến, suy luận, hiển thị cục bộ, điều khiển cục bộ và đồng bộ dữ liệu lên nền tảng IoT.
+
+\subsection{Đánh giá}
+
+Task 6 là phần mở rộng quan trọng của toàn bộ hệ thống:
+\begin{itemize}
+  \item Nếu Task 1--5 tập trung vào RTOS, hiển thị và suy luận nhúng, thì Task 6 bổ sung lớp kết nối hệ thống ra bên ngoài.
+  \item Thiết kế \texttt{cloudTask} tách biệt giúp phần cloud không làm ảnh hưởng đến chu kỳ đọc cảm biến và suy luận TinyML.
+  \item Dashboard nội bộ và cloud telemetry cùng dùng chung snapshot nên dữ liệu nhất quán giữa hai giao diện.
+\end{itemize}
+
+\section{Kết luận}
+
+Qua 6 task đã thực hiện, hệ thống được phát triển theo một lộ trình rõ ràng:
+\begin{itemize}
+  \item \textbf{Task 1}: xây được nền RTOS và cơ chế semaphore đúng bản chất.
+  \item \textbf{Task 2}: thêm lớp hiển thị trực quan cho độ ẩm bằng NeoPixel.
+  \item \textbf{Task 3}: hình thành cơ chế phân loại trạng thái môi trường và hiển thị có cấu trúc.
+  \item \textbf{Task 4}: bổ sung giao tiếp mạng cục bộ và điều khiển qua web.
+  \item \textbf{Task 5}: đưa TinyML vào vòng lặp vận hành thực tế của hệ thống.
+  \item \textbf{Task 6}: hoàn thiện hệ thống theo mô hình IoT cloud-connected.
+\end{itemize}
+
+Toàn bộ quá trình thực hiện cho thấy ba giá trị kỹ thuật nổi bật của đồ án:
+\begin{itemize}
+  \item xây dựng ứng dụng nhúng theo RTOS,
+  \item triển khai suy luận TinyML trên edge device,
+  \item và kết nối dữ liệu lên nền tảng cloud để hình thành một pipeline IoT hoàn chỉnh.
+\end{itemize}
+
+Trong tương lai, hệ thống có thể được mở rộng thêm bằng các hướng như:
+\begin{itemize}
+  \item thay dataset tổng hợp bằng dữ liệu môi trường thực tế dài ngày,
+  \item thêm điều khiển hai chiều từ cloud xuống thiết bị,
+  \item bổ sung lưu trữ lịch sử và cảnh báo thời gian thực trên dashboard.
+\end{itemize}
+
+\end{document}
