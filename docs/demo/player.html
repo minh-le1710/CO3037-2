@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CO3037 Demo Player</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="player-page">
+    <div class="page-shell">
+      <a class="back-link" href="../index.html">Quay về gallery</a>
+
+      <section class="player-layout">
+        <div class="player-copy">
+          <p class="eyebrow" id="demo-kind">CO3037 Demo</p>
+          <h1 id="demo-title">Đang tải video...</h1>
+          <p id="demo-description" class="hero-copy">
+            Video demo sẽ được phát trực tiếp ngay trên trang này.
+          </p>
+          <div class="hint-box">
+            <p>Video được mở ở chế độ mute để trình duyệt cho phép autoplay.</p>
+            <p>Bạn có thể bấm unmute hoặc chuyển sang toàn màn hình khi cần.</p>
+          </div>
+        </div>
+
+        <div class="player-card">
+          <video id="demo-video" controls autoplay muted playsinline preload="metadata">
+            Trình duyệt của bạn không hỗ trợ phát video HTML5.
+          </video>
+        </div>
+      </section>
+    </div>
+
+    <script src="./player.js"></script>
+  </body>
+</html>
